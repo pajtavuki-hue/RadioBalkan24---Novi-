@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Java 17
@@ -23,42 +23,44 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Find Android project
+      - name: Locate Android project
         shell: bash
         run: |
-          set -e
-          mkdir -p android-project
+          set -euo pipefail
 
-          if [ -f "settings.gradle" ] || [ -f "settings.gradle.kts" ]; then
-            echo "PROJECT_DIR=." >> "$GITHUB_ENV"
+          PROJECT_DIR=""
+
+          if [ -f "app/build.gradle" ] || [ -f "app/build.gradle.kts" ]; then
+            PROJECT_DIR="."
           else
-            FOUND=0
+            while IFS= read -r -d '' ZIP; do
+              DEST="$RUNNER_TEMP/android-project-$(basename "$ZIP" .zip)"
+              mkdir -p "$DEST"
+              unzip -oq "$ZIP" -d "$DEST"
 
-            for ZIP in *.zip; do
-              [ -f "$ZIP" ] || continue
-
-              mkdir -p android-project
-              unzip -oq "$ZIP" -d android-project
-
-              PROJECT_FILE=$(find android-project \
-                -type f \
+              SETTINGS=$(find "$DEST" -type f \
                 \( -name settings.gradle -o -name settings.gradle.kts \) \
                 -print -quit)
 
-              if [ -n "$PROJECT_FILE" ]; then
-                PROJECT_DIR=$(dirname "$PROJECT_FILE")
-                echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-                FOUND=1
-                break
-              fi
-            done
+              if [ -n "$SETTINGS" ]; then
+                ROOT="$(dirname "$SETTINGS")"
 
-            if [ "$FOUND" -eq 0 ]; then
-              echo "ERROR: Android Gradle project not found."
-              echo "Check that the repository contains the Android project or its ZIP file."
-              exit 1
-            fi
+                if [ -f "$ROOT/app/build.gradle" ] || \
+                   [ -f "$ROOT/app/build.gradle.kts" ]; then
+                  PROJECT_DIR="$ROOT"
+                  break
+                fi
+              fi
+            done < <(find . -maxdepth 3 -type f -iname '*.zip' -print0)
           fi
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: Could not find a complete Android project with an app module."
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Android project found: $PROJECT_DIR"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -68,7 +70,7 @@ jobs:
       - name: Build debug APK
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
           cd "$PROJECT_DIR"
 
           if [ -f "./gradlew" ]; then
